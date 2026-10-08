@@ -1,0 +1,16 @@
+{
+  // Cloudflare Workers の設定ファイル
+  "name": "odai-game",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "assets": { "directory": "./public" },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  "vars": {
+    // 使う Gemini のモデル。上が失敗したら下を試します
+    "GEMINI_MODEL": "gemini-flash-latest",
+    "GEMINI_FALLBACK_MODEL": "gemini-flash-lite-latest"
+  }
+}

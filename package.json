@@ -1,0 +1,13 @@
+{
+  "name": "odai-game",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test-mode": "wrangler dev --var MOCK_AI:1",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

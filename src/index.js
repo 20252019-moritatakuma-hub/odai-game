@@ -116,7 +116,7 @@ export class Room extends DurableObject {
   }
 
   aiReady() {
-    return !!this.env.GEMINI_API_KEY || this.env.MOCK_AI === "1";
+    return anyAI(this.env) || this.env.MOCK_AI === "1";
   }
 
   view(exclude) {
@@ -139,7 +139,7 @@ export class Room extends DurableObject {
       winnerId: s.winnerId,
       topic: s.phase === "ended" && s.secret ? s.secret.topic : null,
       aiReady: this.aiReady(),
-      mock: !this.env.GEMINI_API_KEY && this.env.MOCK_AI === "1",
+      mock: !anyAI(this.env) && this.env.MOCK_AI === "1",
     };
   }
 
@@ -244,7 +244,7 @@ export class Room extends DurableObject {
     if (s.phase !== "lobby") return this.err(ws, "すでにゲーム中です。");
     if (!this.canHost(me)) return this.err(ws, "開始できるのはホストだけです。");
     if (s.busy) return this.err(ws, "準備中です。少し待ってください。");
-    if (!this.aiReady()) return this.err(ws, "AIのキー(GEMINI_API_KEY)が設定されていません。READMEの手順で設定してください。");
+    if (!this.aiReady()) return this.err(ws, "使えるAIがありません。GEMINI_API_KEY か GROQ_API_KEY を設定してください。");
 
     const con = this.connectedIds();
     s.players = s.players.filter((p) => con.has(p.id));
@@ -253,7 +253,7 @@ export class Room extends DurableObject {
     s.busy = { kind: "start", playerId: me, at: Date.now() };
     this.broadcast();
 
-    const { secret, fallback } = await this.makeTopic();
+    const { secret, fallback, label: topicBy } = await this.makeTopic();
 
     const con2 = this.connectedIds();
     s.players = s.players.filter((p) => con2.has(p.id));
@@ -269,7 +269,7 @@ export class Room extends DurableObject {
     s.busy = null;
     s.log = [];
     if (fallback) s.log.push({ k: "sys", text: "(AIの出題に失敗したため、予備のお題を使います)" });
-    s.log.push({ k: "sys", text: `ゲーム開始!お題が決まりました。順番: ${s.order.map((id) => this.nameOf(id)).join(" → ")}` });
+    s.log.push({ k: "sys", text: `ゲーム開始!お題が決まりました(出題: ${topicBy})。順番: ${s.order.map((id) => this.nameOf(id)).join(" → ")}` });
     s.log.push({ k: "sys", text: `サイクル1開始。最初は${this.nameOf(s.order[0])}さんの番です` });
     await this.save();
     this.broadcast();
@@ -286,19 +286,19 @@ export class Room extends DurableObject {
     s.busy = { kind: "question", playerId: me, at: Date.now() };
     this.broadcast();
 
-    let reply;
+    let res;
     try {
-      reply = await this.aiQuestion(text);
+      res = await this.aiQuestion(text);
     } catch (e) {
       console.error(e);
       s.busy = null;
       this.broadcast();
       if (e.message === "LEAK") return this.err(ws, "その質問だと答えがそのまま出てしまいます。聞き方を変えてください(番は消費していません)。");
-      return this.err(ws, "AIが応答できませんでした。もう一度質問してください(番は消費していません)。" + shortErr(e));
+      return this.err(ws, aiErrMsg(e, "もう一度質問してください(番は消費していません)。"));
     }
     s.busy = null;
     if (s.phase !== "playing") { this.broadcast(); return; }
-    s.log.push({ k: "q", by: me, name: this.nameOf(me), text, reply });
+    s.log.push({ k: "q", by: me, name: this.nameOf(me), text, reply: res.reply, ai: res.label });
     this.advanceTurn();
     await this.save();
     this.broadcast();
@@ -316,19 +316,19 @@ export class Room extends DurableObject {
     s.busy = { kind: "answer", playerId: me, at: Date.now() };
     this.broadcast();
 
-    let correct;
+    let correct, judgeBy;
     try {
-      correct = await this.judge(text);
+      ({ correct, label: judgeBy } = await this.judge(text));
     } catch (e) {
       console.error(e);
       s.busy = null;
       this.broadcast();
-      return this.err(ws, "判定できませんでした。もう一度回答してください(回答権は消費していません)。" + shortErr(e));
+      return this.err(ws, aiErrMsg(e, "もう一度回答してください(回答権は消費していません)。"));
     }
     s.busy = null;
     if (s.phase !== "playing") { this.broadcast(); return; }
     s.answered.push(me);
-    s.log.push({ k: "a", by: me, name: this.nameOf(me), text, correct });
+    s.log.push({ k: "a", by: me, name: this.nameOf(me), text, correct, ai: judgeBy });
     if (correct) {
       s.phase = "ended";
       s.winnerId = me;
@@ -431,53 +431,61 @@ export class Room extends DurableObject {
   // ----- AI -----
   async makeTopic() {
     const s = this.s;
-    if (!this.env.GEMINI_API_KEY) return { secret: pickFallback(s.usedTopics), fallback: false };
+    if (!anyAI(this.env)) return { secret: pickFallback(s.usedTopics), fallback: false, label: "テストモード" };
     try {
       const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
       const user = `ジャンル: ${genre}\n乱数: ${Math.floor(Math.random() * 1e6)}\n最近使ったお題(避けること): ${s.usedTopics.slice(-20).join("、") || "なし"}`;
-      const r = await gemini(this.env, TOPIC_SYSTEM, user, 1.0);
-      const topic = clean(r.topic, 20);
-      if (!topic) throw new Error("お題が空です");
-      const secret = {
-        topic,
-        reading: clean(r.reading, 40),
-        aliases: (Array.isArray(r.aliases) ? r.aliases : []).map((a) => clean(a, 30)).filter(Boolean).slice(0, 6),
-      };
-      secret.hints = (Array.isArray(r.hints) ? r.hints : [])
-        .map((h) => clean(h, 60))
-        .filter((h) => h && !leaks(h, secret))
-        .slice(0, HINT_COUNT);
-      if (secret.hints.length < 3) throw new Error("ヒントが足りません");
-      return { secret, fallback: false };
+      const { data: secret, label } = await callAI(this.env, TOPIC_SYSTEM, user, 1.0, (r) => {
+        const topic = clean(r.topic, 20);
+        if (!topic) throw new Error("お題が空です");
+        const sec = {
+          topic,
+          reading: clean(r.reading, 40),
+          aliases: (Array.isArray(r.aliases) ? r.aliases : []).map((a) => clean(a, 30)).filter(Boolean).slice(0, 6),
+        };
+        sec.hints = (Array.isArray(r.hints) ? r.hints : [])
+          .map((h) => clean(h, 60))
+          .filter((h) => h && !leaks(h, sec))
+          .slice(0, HINT_COUNT);
+        if (sec.hints.length < 3) throw new Error("ヒントが足りません");
+        return sec;
+      });
+      return { secret, fallback: false, label };
     } catch (e) {
-      console.error("makeTopic failed", e);
-      return { secret: pickFallback(s.usedTopics), fallback: true };
+      console.error("makeTopic failed", e, e.cause);
+      return { secret: pickFallback(s.usedTopics), fallback: true, label: "予備のお題" };
     }
   }
 
   async aiQuestion(text) {
     const sec = this.s.secret;
-    if (!this.env.GEMINI_API_KEY) return "(テストモード)はい";
+    if (!anyAI(this.env)) return { reply: "(テストモード)はい", label: "テストモード" };
     const history = this.s.log
       .filter((l) => l.k === "q")
       .slice(-20)
       .map((l) => `Q: ${l.text}\nA: ${l.reply}`)
       .join("\n");
     const user = `これまでの質問と回答:\n${history || "なし"}\n\n今回の質問: ${text}`;
-    const r = await gemini(this.env, questionSystem(sec), user, 0.3);
-    const reply = clean(r.reply, 100);
-    if (!reply) throw new Error("空の応答");
+    const { data: reply, label } = await callAI(this.env, questionSystem(sec), user, 0.3, (r) => {
+      const reply = clean(r.reply, 100);
+      if (!reply) throw new Error("空の応答");
+      return reply;
+    });
     if (leaks(reply, sec)) throw new Error("LEAK");
-    return reply;
+    return { reply, label };
   }
 
   async judge(text) {
     const sec = this.s.secret;
     const g = norm(text);
-    if ([sec.topic, sec.reading, ...sec.aliases].some((x) => x && norm(x) === g)) return true;
-    if (!this.env.GEMINI_API_KEY) return false;
-    const r = await gemini(this.env, judgeSystem(sec), `プレイヤーの回答: ${text}`, 0);
-    return r.correct === true;
+    if ([sec.topic, sec.reading, ...sec.aliases].some((x) => x && norm(x) === g)) return { correct: true, label: "完全一致" };
+    if (!anyAI(this.env)) return { correct: false, label: "テストモード" };
+    const { data: correct, label } = await callAI(this.env, judgeSystem(sec), `プレイヤーの回答: ${text}`, 0, (r) => {
+      if (typeof r.correct === "boolean") return r.correct;
+      if (r.correct === "true" || r.correct === "false") return r.correct === "true";
+      throw new Error("判定の形式が違います");
+    });
+    return { correct, label };
   }
 }
 
@@ -519,40 +527,148 @@ function judgeSystem(sec) {
 出力はJSONのみ: {"correct": true または false}`;
 }
 
-// ===== Gemini 呼び出し =====
-async function gemini(env, system, user, temperature) {
-  const models = [env.GEMINI_MODEL || "gemini-flash-latest", env.GEMINI_FALLBACK_MODEL || "gemini-flash-lite-latest"];
+// ===== AI 呼び出し(控えリストを上から順に試す) =====
+const DEFAULT_AI_MODELS =
+  "gemini:gemini-flash-lite-latest|Gemini Flash Lite, gemini:gemma-4-31b-it|Gemma 4, groq:qwen/qwen3.8-27b|Qwen 3.8, groq:openai/gpt-oss-120b|gpt-oss-120b, workers:@cf/meta/llama-3.3-70b-instruct-fp8-fast|Llama 3.3";
+
+// 上限に達したモデルは、しばらく試さずに飛ばす(無駄な待ち時間を減らす)
+const cooldownUntil = new Map();
+
+function parseModels(env) {
+  return String(env.AI_MODELS || DEFAULT_AI_MODELS)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const [spec, label] = s.split("|").map((x) => x.trim());
+      const i = spec.indexOf(":");
+      const provider = spec.slice(0, i).toLowerCase();
+      const model = spec.slice(i + 1);
+      return { provider, model, label: label || model, key: `${provider}:${model}` };
+    })
+    .filter((m) => ["gemini", "groq", "workers"].includes(m.provider) && m.model);
+}
+
+function available(env, m) {
+  if (m.provider === "gemini") return !!env.GEMINI_API_KEY;
+  if (m.provider === "groq") return !!env.GROQ_API_KEY;
+  if (m.provider === "workers") return !!env.AI;
+  return false;
+}
+
+function anyAI(env) {
+  return parseModels(env).some((m) => available(env, m));
+}
+
+class AIError extends Error {
+  constructor(message, status, body = "") {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+}
+
+// validate: AIの返事(JSON)を確かめる関数。おかしければ throw して次のAIに回す
+async function callAI(env, system, user, temperature, validate = (x) => x) {
+  const models = parseModels(env).filter((m) => available(env, m));
+  if (!models.length) throw new Error("AIが1つも設定されていません");
+  const now = Date.now();
+  // 休憩中のモデルは後回し(全部休憩中なら一応すべて試す)
+  const ready = models.filter((m) => (cooldownUntil.get(m.key) || 0) <= now);
+  const order = ready.length ? ready : models;
+  let limited = 0;
   let lastErr;
-  for (const model of models) {
+  for (const m of order) {
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] },
-          contents: [{ role: "user", parts: [{ text: user }] }],
-          generationConfig: { temperature, responseMimeType: "application/json" },
-        }),
-        signal: AbortSignal.timeout(30_000),
-      });
-      if (!res.ok) {
-        lastErr = new Error(`${model}: HTTP ${res.status}`);
-        console.error(lastErr.message, (await res.text()).slice(0, 300));
-        continue;
-      }
-      const data = await res.json();
-      const text = (data?.candidates?.[0]?.content?.parts ?? [])
-        .filter((p) => !p.thought)
-        .map((p) => p.text || "")
-        .join("")
-        .replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, "");
-      return JSON.parse(text);
+      const text = await RUNNERS[m.provider](env, m.model, system, user, temperature);
+      const data = validate(parseJSON(text));
+      return { data, label: m.label };
     } catch (e) {
       lastErr = e;
-      console.error(model, e);
+      const st = e.status || 0;
+      console.error(`[AI] ${m.label} failed:`, st, String(e.message).slice(0, 200), String(e.body || "").slice(0, 200));
+      if (st === 429) {
+        limited++;
+        const daily = /day|daily|RPD|per_day|PerDay/i.test(e.body || "");
+        cooldownUntil.set(m.key, Date.now() + (daily ? 30 : 1) * 60_000);
+      } else if (st === 400 || st === 401 || st === 403 || st === 404) {
+        cooldownUntil.set(m.key, Date.now() + 10 * 60_000); // 設定ミスの可能性。しばらく飛ばす
+      }
     }
   }
-  throw lastErr ?? new Error("AI error");
+  const err = new Error(limited ? "QUOTA" : "AI_FAILED");
+  err.cause = lastErr;
+  throw err;
+}
+
+const RUNNERS = {
+  async gemini(env, model, system, user, temperature) {
+    const isGemini = model.startsWith("gemini");
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: user }] }],
+        generationConfig: isGemini ? { temperature, responseMimeType: "application/json" } : { temperature },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new AIError(`HTTP ${res.status}`, res.status, await res.text());
+    const data = await res.json();
+    return (data?.candidates?.[0]?.content?.parts ?? [])
+      .filter((p) => !p.thought)
+      .map((p) => p.text || "")
+      .join("");
+  },
+
+  async groq(env, model, system, user, temperature) {
+    const extra = {};
+    if (/qwen/i.test(model)) extra.reasoning_effort = "none"; // 考える過程を出さない
+    if (/gpt-oss/i.test(model)) { extra.include_reasoning = false; extra.reasoning_effort = "low"; }
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.GROQ_API_KEY}` },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        temperature,
+        max_completion_tokens: 1024,
+        ...extra,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new AIError(`HTTP ${res.status}`, res.status, await res.text());
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content ?? "";
+  },
+
+  async workers(env, model, system, user, temperature) {
+    let r;
+    try {
+      r = await env.AI.run(model, {
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+        temperature,
+        max_tokens: 1024,
+      });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      // 1日の無料枠(10,000ニューロン)を使い切ったとき
+      throw new AIError(msg, /3036|neurons|limit|429/i.test(msg) ? 429 : 500, /3036|neurons|daily/i.test(msg) ? "daily" : msg);
+    }
+    if (typeof r?.response === "object" && r.response) return JSON.stringify(r.response);
+    return r?.response ?? r?.choices?.[0]?.message?.content ?? "";
+  },
+};
+
+// AIの返事から JSON を取り出す(余計な文や ``` が付いていても読めるように)
+function parseJSON(text) {
+  let t = String(text ?? "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  t = t.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+  try { return JSON.parse(t); } catch {}
+  const a = t.indexOf("{"), b = t.lastIndexOf("}");
+  if (a >= 0 && b > a) return JSON.parse(t.slice(a, b + 1));
+  throw new Error("JSONが読めません: " + t.slice(0, 80));
 }
 
 // ===== 小物 =====
@@ -600,8 +716,7 @@ function pickFallback(used) {
   return structuredClone(list[Math.floor(Math.random() * list.length)]);
 }
 
-function shortErr(e) {
-  const m = String(e?.message || "");
-  if (m.includes("429")) return "(AIの無料枠の上限に達した可能性があります。少し時間をおいてください)";
-  return "";
+function aiErrMsg(e, retry) {
+  if (e?.message === "QUOTA") return "すべてのAIが無料枠の上限に達しています。1分ほど待ってから" + retry + "(1日の上限なら、日本時間の夕方に回復します)";
+  return "AIが応答できませんでした。" + retry;
 }

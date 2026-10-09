@@ -3,14 +3,20 @@
   "name": "odai-game",
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
+  "workers_dev": true,
   "assets": { "directory": "./public" },
   "durable_objects": {
     "bindings": [{ "name": "ROOMS", "class_name": "Room" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Room"] }],
+  // Cloudflare Workers AI(キー不要の無料AI)を使うための設定
+  "ai": { "binding": "AI" },
   "vars": {
-    // 使う Gemini のモデル。上が失敗したら下を試します
-    "GEMINI_MODEL": "gemini-flash-latest",
-    "GEMINI_FALLBACK_MODEL": "gemini-flash-lite-latest"
+    // 使うAIの控えリスト。上から順に試し、上限などで使えなければ次へ進みます。
+    // 書き方: 「サービス:モデル名|画面に出す名前」をカンマで区切って並べる
+    //   gemini  … Gemini APIのキー(GEMINI_API_KEY)を使う
+    //   groq    … GroqのAPIキー(GROQ_API_KEY)を使う
+    //   workers … Cloudflare Workers AI(キー不要)
+    "AI_MODELS": "gemini:gemini-flash-lite-latest|Gemini Flash Lite, gemini:gemma-4-31b-it|Gemma 4, groq:qwen/qwen3.8-27b|Qwen 3.8, groq:openai/gpt-oss-120b|gpt-oss-120b, workers:@cf/meta/llama-3.3-70b-instruct-fp8-fast|Llama 3.3"
   }
 }

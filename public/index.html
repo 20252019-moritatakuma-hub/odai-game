@@ -103,6 +103,7 @@
   .log-ans.ok { border-color: var(--ok); color: var(--ok); font-weight: 700; }
   .log-ans .res { font-weight: 800; margin-left: 6px; }
   .log-ans.ng .res { color: var(--ng); }
+  .log-ans .judge { display: block; font-size: 11px; color: var(--muted); font-weight: 400; }
 
   .side { display: grid; gap: 12px; }
   .panel { padding: 14px 16px; }
@@ -315,7 +316,7 @@
 
     // 警告
     const warn = $("#warn");
-    if (!s.aiReady) { warn.textContent = "AIのキー(GEMINI_API_KEY)が未設定のため、ゲームを開始できません。READMEの手順で設定してください。"; warn.classList.remove("hidden"); }
+    if (!s.aiReady) { warn.textContent = "使えるAIがないため、ゲームを開始できません。GEMINI_API_KEY か GROQ_API_KEY を設定してください。"; warn.classList.remove("hidden"); }
     else if (s.mock) { warn.textContent = "テストモードで動いています(AIの代わりに決まった返事をします)。"; warn.classList.remove("hidden"); }
     else warn.classList.add("hidden");
 
@@ -409,7 +410,7 @@
     if (l.k === "q") {
       const w = el("div", "entry-q");
       const q = el("div", "bubble player"); q.append(el("span", "who", l.name)); q.append(document.createTextNode(l.text));
-      const a = el("div", "bubble ai"); a.append(el("span", "who", "AI")); a.append(document.createTextNode(l.reply));
+      const a = el("div", "bubble ai"); a.append(el("span", "who", l.ai ? `AI(${l.ai})` : "AI")); a.append(document.createTextNode(l.reply));
       w.append(q, a);
       return w;
     }
@@ -417,6 +418,7 @@
       const d = el("div", "log-ans " + (l.correct ? "ok" : "ng"));
       d.append(document.createTextNode(`${l.name}さんの回答:「${l.text}」`));
       d.append(el("span", "res", l.correct ? "⭕ 正解!" : "❌ 不正解"));
+      if (l.ai) d.append(el("span", "judge", `判定: ${l.ai}`));
       return d;
     }
     if (l.k === "hint") return el("div", "log-hint", `💡 ヒント${l.n}: ${l.text}`);

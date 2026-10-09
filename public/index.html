@@ -99,6 +99,41 @@
     .grid { grid-template-columns: 1fr; grid-template-areas: "hints" "main" "chat"; grid-template-rows: auto; }
   }
 
+  /* 改善メモ */
+  .fb-cta { max-width: 440px; margin: 14px auto 0; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; font-size: 13px; }
+  .fb-overlay { position: fixed; inset: 0; background: #0006; z-index: 20; display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px; overflow-y: auto; }
+  .fb-panel { width: 100%; max-width: 620px; padding: 18px 20px; display: grid; gap: 12px; }
+  .fb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .fb-head h2 { margin: 0; font-size: 20px; }
+  .fb-desc { margin: 0; font-size: 13px; }
+  .fb-form { display: grid; gap: 8px; }
+  .fb-form textarea {
+    width: 100%; padding: 10px 12px; border-radius: 12px; border: 1.5px solid var(--line);
+    background: var(--paper); font: inherit; color: inherit; resize: vertical; outline: none;
+  }
+  .fb-form textarea:focus { border-color: var(--accent); }
+  .fb-send input { flex: 1; }
+  .fb-cats, .fb-filter { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .fb-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .fb-filter { border-top: 1px dashed var(--line); padding-top: 12px; }
+  .fb-filter .fb-label { font-weight: 700; color: var(--ink); font-size: 14px; margin-right: 6px; }
+  .pill { border: 1.5px solid var(--line); background: transparent; border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+  .pill.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .fb-list { display: grid; gap: 8px; }
+  .fb-item { border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; display: grid; gap: 4px; }
+  .fb-item.done { opacity: .6; }
+  .fb-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .fb-text { white-space: pre-wrap; word-break: break-word; }
+  .cat { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+  .cat-不具合 { background: #fde2e2; color: #b42318; }
+  .cat-改善案 { background: var(--ai-soft); color: var(--ai); }
+  .cat-その他 { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .done-tag { font-size: 11px; font-weight: 700; color: var(--ok); }
+  .fb-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+  .vote { border: 1.5px solid var(--line); background: transparent; border-radius: 999px; padding: 2px 10px; font-size: 13px; cursor: pointer; }
+  .vote.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+  @media (prefers-color-scheme: dark) { .cat-不具合 { background: #3d1d1d; color: #ff9c9c; } }
+
   /* チャット */
   .chat { display: flex; flex-direction: column; padding: 14px 16px; max-height: min(60dvh, 560px); }
   .chat h3 { margin: 0 0 8px; font-size: 15px; font-family: "M PLUS Rounded 1c", sans-serif; }
@@ -134,6 +169,9 @@
   .hints li::marker { color: var(--hint); font-weight: 800; }
   .actions { margin-top: 12px; padding: 14px; display: grid; gap: 10px; }
   .actions .label { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  #aBox.urgent { background: var(--accent-soft); border-radius: 12px; padding: 8px 10px; margin: -4px -6px; }
+  #aBox.urgent .label { color: var(--accent); font-weight: 700; }
+  #aBox.urgent input { border-color: var(--accent); }
   .hostbar { display: flex; gap: 8px; flex-wrap: wrap; }
 
   .result { text-align: center; padding: 22px; margin-bottom: 12px; }
@@ -161,7 +199,7 @@
     <div class="card entry">
       <div>
         <label for="name">あなたの名前</label>
-        <input id="name" type="text" maxlength="12" placeholder="例: たくま" autocomplete="nickname">
+        <input id="name" type="text" maxlength="12" placeholder="ニックネーム(12文字まで)" autocomplete="nickname">
       </div>
       <button class="btn" id="createBtn">部屋を作る</button>
       <div class="or">または コードで参加</div>
@@ -174,11 +212,15 @@
       <b>ルール</b>
       <ol>
         <li>AIがランダムなお題を決めます。誰にも分かりません。</li>
-        <li>自分の番に1回質問できます(例: それは10g以上ですか?)。AIが答えると次の人の番です。</li>
+        <li>自分の番に1回、はい/いいえで答えられる質問ができます(例: それは10g以上ですか?)。AIは「はい・いいえ・どちらとも言えない・関係ありません」で答えます。</li>
         <li>回答は1サイクルに1回。自分の番でなくても、いつでも答えられます。</li>
-        <li>全員の番が一周するたびに、ヒントが1つ出ます。</li>
+        <li>全員の番が一周したら回答タイム。まだ回答していない人は回答してから、ヒントが1つ出て次のサイクルへ。</li>
         <li>最初に正解した人の勝ち!(8サイクルで終了)</li>
       </ol>
+    </div>
+    <div class="fb-cta">
+      <button class="btn ghost" data-open-fb>📝 改善メモを見る・書く</button>
+      <div class="muted">不具合や「こうしてほしい」を気軽に書き込んでください</div>
     </div>
   </section>
 
@@ -188,6 +230,7 @@
       <div class="title">お題当て</div>
       <span class="conn" id="conn" title="接続状態"></span>
       <span>部屋 <span class="code" id="roomCode">----</span></span>
+      <button class="btn ghost small" data-open-fb>📝 改善メモ</button>
       <button class="btn ghost small" id="copyBtn">招待リンクをコピー</button>
       <button class="btn ghost small" id="leaveBtn">退出</button>
     </div>
@@ -238,6 +281,27 @@
     </div>
   </section>
 </div>
+<!-- 改善メモ -->
+<div class="fb-overlay hidden" id="fbOverlay">
+  <div class="card fb-panel" role="dialog" aria-modal="true" aria-labelledby="fbTitle">
+    <div class="fb-head">
+      <h2 id="fbTitle" class="title">📝 改善メモ</h2>
+      <button class="btn ghost small" id="fbClose" aria-label="閉じる">閉じる</button>
+    </div>
+    <p class="muted fb-desc">遊んでみて気づいた不具合や、「こうしてほしい」を書いてください。全員が見られます。同じ意見には 👍 を押してください。</p>
+    <form id="fbForm" class="fb-form">
+      <div class="fb-cats" id="fbCats"></div>
+      <textarea id="fbText" maxlength="500" rows="3" placeholder="例: スマホだと回答ボタンが押しにくい"></textarea>
+      <div class="row fb-send">
+        <input id="fbName" type="text" maxlength="12" placeholder="名前(なしでもOK)">
+        <button class="btn" id="fbSend">書き込む</button>
+      </div>
+    </form>
+    <div class="fb-filter" id="fbFilter"></div>
+    <div class="fb-list" id="fbList"><div class="muted">読み込み中…</div></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -363,6 +427,7 @@
       if (p.id === s.hostId) c.append(el("span", "tag", "👑"));
       c.append(el("span", null, p.name));
       if (s.phase === "playing" && s.answered.includes(p.id)) c.append(el("span", "tag", "✋回答済"));
+      else if (s.answerTime && p.connected && !(s.judging || []).includes(p.id)) { c.classList.add("turn"); c.append(el("span", "tag", "⏰回答待ち")); }
       if (!p.connected) c.append(el("span", "tag", "離席"));
       pl.append(c);
     }
@@ -388,6 +453,9 @@
     } else if (s.phase === "lobby") {
       st.append(el("span", "big", `参加者 ${s.players.length}人`));
       st.append(el("span", "muted", isHost ? "全員そろったら開始してください" : "ホストの開始を待っています"));
+    } else if (s.phase === "playing" && s.answerTime) {
+      const mustAnswer = isPlayer && !s.answered.includes(myId) && !judging.includes(myId);
+      st.append(el("span", "big", mustAnswer ? "⏰ 回答タイム!あなたも回答してください" : "⏰ 回答タイム(ほかの人の回答待ち)"));
     } else if (s.phase === "playing") {
       st.append(el("span", "big", myTurn ? "あなたの番です!質問してください" : `${nameOf(s.turnId)}さんの番`));
     } else {
@@ -421,15 +489,18 @@
     $("#qBtn").textContent = myTurn && busy && s.busy.playerId === myId ? "考え中…" : "質問";
     $("#aBtn").textContent = judging.includes(myId) ? "判定中…" : "回答";
     $("#qInput").placeholder = myTurn ? "例: それは10g以上ですか?" : "自分の番が来たら送れます(先に書いておけます)";
-    $("#qLabel").textContent = myTurn ? "質問(あなたの番です)" : "質問(自分の番に1回)";
-    $("#aLabel").textContent = playing && s.answered.includes(myId) ? "回答(このサイクルは回答済み)" : "回答(1サイクルに1回・いつでも)";
+    $("#aBox").classList.toggle("urgent", !!s.answerTime && canA);
+    $("#qLabel").textContent = s.answerTime ? "質問(回答タイムが終わると次のサイクルが始まります)" : myTurn ? "質問(あなたの番です)" : "質問(自分の番に1回)";
+    $("#aLabel").textContent = s.answerTime && canA ? "⏰ 回答タイム: 回答してください(全員そろうと次のサイクルへ)"
+      : playing && s.answered.includes(myId) ? "回答(このサイクルは回答済み)" : "回答(1サイクルに1回・いつでも)";
 
     // ホスト操作
     const hb = $("#hostbar"); hb.innerHTML = "";
     const turnOffline = playing && !s.players.find((p) => p.id === s.turnId)?.connected;
     if (s.phase === "lobby" && isHost) hb.append(button("ゲーム開始", "btn", () => send({ type: "start" }), busy || !s.aiReady));
     if (myTurn) hb.append(button("パスする", "btn ghost small", () => send({ type: "pass" }), busy));
-    if (playing && (isHost || (turnOffline && isPlayer)) && !myTurn) hb.append(button("この番をスキップ", "btn ghost small", () => send({ type: "skip" }), busy));
+    if (playing && s.answerTime && isHost) hb.append(button("回答タイムを終わる", "btn ghost small", () => { if (confirm("まだ回答していない人を待たずに次のサイクルへ進みますか?")) send({ type: "skip" }); }, busy || judging.length > 0));
+    else if (playing && !s.answerTime && (isHost || (turnOffline && isPlayer)) && !myTurn) hb.append(button("この番をスキップ", "btn ghost small", () => send({ type: "skip" }), busy));
     if (playing && isHost) hb.append(button("降参してお題を見る", "btn ghost small", () => { if (confirm("ゲームを終了してお題を表示しますか?")) send({ type: "giveup" }); }, busy));
     if (s.phase === "ended" && isHost) hb.append(button("もう一度遊ぶ", "btn", () => send({ type: "reset" })));
     if (s.phase === "ended" && !isHost) hb.append(el("span", "muted", "ホストが次のゲームを準備します"));
@@ -526,6 +597,108 @@
     const link = `${location.origin}/?room=${roomCode}`;
     try { await navigator.clipboard.writeText(link); toast("招待リンクをコピーしました"); }
     catch { prompt("このリンクを友だちに送ってください", link); }
+  };
+
+  // ===== 改善メモ =====
+  const FB_CATS = ["不具合", "改善案", "その他"];
+  let fbCat = "不具合", fbFilter = "すべて", fbItems = [], fbAdmin = false, fbTimer = null;
+  // 管理者: ?admin=キー で一度開くと、このブラウザに覚える(対応済み・削除ができる)
+  const adminParam = new URLSearchParams(location.search).get("admin");
+  if (adminParam) {
+    store.set("odai.admin", adminParam);
+    const u = new URL(location.href); u.searchParams.delete("admin"); history.replaceState(null, "", u);
+  }
+  const adminKey = () => store.get("odai.admin") || "";
+
+  function fbPills(box, opts, cur, onPick, label) {
+    box.innerHTML = "";
+    box.append(el("span", "fb-label", label));
+    for (const o of opts) {
+      const b = el("button", "pill" + (o === cur ? " on" : ""), o);
+      b.type = "button";
+      b.onclick = () => onPick(o);
+      box.append(b);
+    }
+  }
+  function fbRenderControls() {
+    fbPills($("#fbCats"), FB_CATS, fbCat, (c) => { fbCat = c; fbRenderControls(); }, "種類");
+    fbPills($("#fbFilter"), ["すべて", ...FB_CATS, "未対応"], fbFilter, (c) => { fbFilter = c; fbRenderControls(); fbRenderList(); }, "みんなのメモ");
+  }
+  function ago(t) {
+    const s = Math.floor((Date.now() - t) / 1000);
+    if (s < 60) return "たった今";
+    if (s < 3600) return `${Math.floor(s / 60)}分前`;
+    if (s < 86400) return `${Math.floor(s / 3600)}時間前`;
+    return `${Math.floor(s / 86400)}日前`;
+  }
+  function fbRenderList() {
+    const list = $("#fbList"); list.innerHTML = "";
+    const items = fbItems.filter((x) => fbFilter === "すべて" || (fbFilter === "未対応" ? !x.done : x.cat === fbFilter));
+    if (!items.length) { list.append(el("div", "muted", fbItems.length ? "この条件のメモはありません" : "まだ書き込みはありません。最初の1件をどうぞ!")); return; }
+    for (const x of items) {
+      const d = el("div", "fb-item" + (x.done ? " done" : ""));
+      const meta = el("div", "fb-meta");
+      meta.append(el("span", "cat cat-" + x.cat, x.cat));
+      if (x.done) meta.append(el("span", "done-tag", "✓ 対応済み"));
+      meta.append(el("span", null, `${x.name}・${ago(x.t)}`));
+      d.append(meta, el("div", "fb-text", x.text));
+      const act = el("div", "fb-actions");
+      const v = el("button", "vote" + (x.voted ? " on" : ""), `👍 わかる ${x.votes || ""}`.trim());
+      v.onclick = () => fbVote(x.id);
+      act.append(v);
+      if (fbAdmin) {
+        act.append(button(x.done ? "未対応に戻す" : "対応済みにする", "btn ghost small", () => fbAdminAct(x.id, x.done ? "undone" : "done")));
+        act.append(button("削除", "btn ghost small", () => { if (confirm("このメモを削除しますか?")) fbAdminAct(x.id, "delete"); }));
+      }
+      d.append(act);
+      list.append(d);
+    }
+  }
+  async function fbLoad() {
+    try {
+      const q = new URLSearchParams({ voter: myId });
+      if (adminKey()) q.set("admin", adminKey());
+      const r = await fetch("/api/feedback?" + q);
+      const j = await r.json();
+      fbItems = j.items || []; fbAdmin = !!j.isAdmin;
+      fbRenderList();
+    } catch { $("#fbList").innerHTML = '<div class="muted">読み込めませんでした。少しあとで開き直してください</div>'; }
+  }
+  async function fbVote(id) {
+    try { await fetch("/api/feedback/vote", { method: "POST", body: JSON.stringify({ id, voter: myId }) }); } catch {}
+    fbLoad();
+  }
+  async function fbAdminAct(id, action) {
+    try {
+      const r = await fetch("/api/feedback/admin", { method: "POST", body: JSON.stringify({ id, action, adminKey: adminKey() }) });
+      if (!r.ok) toast((await r.json()).error || "操作できませんでした", true);
+    } catch {}
+    fbLoad();
+  }
+  function fbOpen() {
+    $("#fbOverlay").classList.remove("hidden");
+    if (!$("#fbName").value) $("#fbName").value = myName();
+    fbRenderControls(); fbLoad();
+    clearInterval(fbTimer); fbTimer = setInterval(fbLoad, 15000);
+    setTimeout(() => $("#fbText").focus(), 50);
+  }
+  function fbClose() { $("#fbOverlay").classList.add("hidden"); clearInterval(fbTimer); }
+  document.querySelectorAll("[data-open-fb]").forEach((b) => (b.onclick = fbOpen));
+  $("#fbClose").onclick = fbClose;
+  $("#fbOverlay").addEventListener("click", (e) => { if (e.target.id === "fbOverlay") fbClose(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#fbOverlay").classList.contains("hidden")) fbClose(); });
+  $("#fbForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const text = $("#fbText").value.trim();
+    if (!text) { toast("内容を書いてください", true); return; }
+    const b = $("#fbSend"); b.disabled = true;
+    try {
+      const r = await fetch("/api/feedback", { method: "POST", body: JSON.stringify({ cat: fbCat, text, name: $("#fbName").value.trim(), voter: myId }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "書き込めませんでした");
+      $("#fbText").value = ""; toast("書き込みました。ありがとうございます!"); fbFilter = "すべて"; fbRenderControls(); fbLoad();
+    } catch (err) { toast(err.message, true); }
+    finally { b.disabled = false; }
   };
 
   // ===== 起動時 =====

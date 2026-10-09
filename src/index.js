@@ -16,6 +16,9 @@ const LOG_LIMIT = 300;
 const CHAT_LIMIT = 100; // チャットは最新100件まで残す
 const CHAT_MAX_LEN = 200; // 1回のチャットの最大文字数
 const CHAT_INTERVAL_MS = 700; // 連投防止の間隔
+// 全部屋共通で覚えておく「最近出たお題」の数(これに入っているお題は出さない)
+const TOPIC_HISTORY = "__topic_history__";
+const TOPIC_HISTORY_LIMIT = 200;
 // 改善メモ
 const FEEDBACK_BOARD = "__feedback_board__";
 const FEEDBACK_CATS = ["不具合", "改善案", "その他"];
@@ -124,6 +127,17 @@ export class Room extends DurableObject {
     };
     await this.save();
     return true;
+  }
+
+  // ===== 最近出たお題(このクラスの「お題の記録」用インスタンスだけが使う) =====
+  async histGet() {
+    return (await this.ctx.storage.get("hist")) || [];
+  }
+
+  async histAdd(topic) {
+    const list = (await this.histGet()).filter((t) => t !== topic);
+    list.push(topic);
+    await this.ctx.storage.put("hist", list.slice(-TOPIC_HISTORY_LIMIT));
   }
 
   // ===== 改善メモ(このクラスの「掲示板」用インスタンスだけが使う) =====
@@ -617,23 +631,46 @@ export class Room extends DurableObject {
   }
 
   // ----- AI -----
+  // 全部屋共通の「最近出たお題」(かぶり防止用)
+  historyBoard() {
+    return this.env.ROOMS ? this.env.ROOMS.get(this.env.ROOMS.idFromName(TOPIC_HISTORY)) : null;
+  }
+
   async makeTopic() {
     const s = this.s;
-    // 一定の割合で、際どいミームのリストから選ぶ(AIを使わないので無料枠も減らない)
-    const memePool = MEMES.filter((m) => !s.usedTopics.includes(m.topic));
+    const board = this.historyBoard();
+    let globalUsed = [];
+    try { if (board) globalUsed = await board.histGet(); } catch (e) { console.error("histGet failed", e); }
+    const used = new Set([...s.usedTopics, ...globalUsed].map(norm));
+    const remember = async (topic) => { try { if (board) await board.histAdd(topic); } catch (e) { console.error("histAdd failed", e); } };
+
+    // ネットミームはジャンルの1つとして、リストから選ぶ(AIを使わないので無料枠も減らない)
+    const memePool = MEMES.filter((m) => !used.has(norm(m.topic)));
     const pickMeme = () => {
       const list = memePool.length ? memePool : MEMES;
       return structuredClone(list[Math.floor(Math.random() * list.length)]);
     };
     const memeRate = MEME_RATE ?? 1 / (GENRES.length + 1);
-    if (memePool.length && Math.random() < memeRate) return { secret: pickMeme(), fallback: false, label: "ミームリスト" };
+    if (memePool.length && Math.random() < memeRate) {
+      const secret = pickMeme();
+      await remember(secret.topic);
+      return { secret, fallback: false, label: "ミームリスト" };
+    }
     if (!anyAI(this.env)) return { secret: pickFallback(s.usedTopics), fallback: false, label: "テストモード" };
     try {
       const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
-      const user = `ジャンル: ${genre}\n乱数: ${Math.floor(Math.random() * 1e6)}\n最近使ったお題(避けること): ${s.usedTopics.slice(-20).join("、") || "なし"}`;
-      const { data: secret, label } = await callAI(this.env, TOPIC_SYSTEM, user, 1.0, (r) => {
-        const topic = clean(r.topic, 20);
-        if (!topic) throw new Error("お題が空です");
+      // 1) 候補をたくさん出してもらい、プログラムがランダムに選ぶ(AIの「定番」に偏らないように)
+      const avoid = globalUsed.slice(-60).join("、") || "なし";
+      const { data: candidates } = await callAI(this.env, CANDIDATE_SYSTEM, `ジャンル: ${genre}\n避けるお題: ${avoid}`, 1.0, (r) => {
+        const list = [...new Set((Array.isArray(r.candidates) ? r.candidates : []).map((x) => clean(x, 20)).filter(Boolean))];
+        const fresh = list.filter((x) => !used.has(norm(x)));
+        if (!fresh.length) throw new Error("新しい候補がありません");
+        return fresh;
+      });
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      // 2) 選んだお題について、読み・別名・説明・ヒントを作ってもらう
+      const { data: secret, label } = await callAI(this.env, TOPIC_SYSTEM, `お題: ${pick}\nジャンル: ${genre}`, 0.7, (r) => {
+        const topic = pick;
         const sec = {
           topic,
           reading: clean(r.reading, 40),
@@ -647,11 +684,14 @@ export class Room extends DurableObject {
         if (sec.hints.length < 3) throw new Error("ヒントが足りません");
         return sec;
       });
+      await remember(secret.topic);
       return { secret, fallback: false, label };
     } catch (e) {
       console.error("makeTopic failed", e, e.cause);
       // AIが出題できないときは、ミームのリストから出す
-      return { secret: pickMeme(), fallback: true, label: "ミームリスト" };
+      const secret = pickMeme();
+      await remember(secret.topic);
+      return { secret, fallback: true, label: "ミームリスト" };
     }
   }
 
@@ -688,17 +728,23 @@ export class Room extends DurableObject {
 }
 
 // ===== プロンプト =====
-const TOPIC_SYSTEM = `あなたは推理ゲーム「お題当て」の出題者です。プレイヤーは質問とヒントを頼りにお題を当てます。
-指定されたジャンルから、お題を1つ決めてください。
+const CANDIDATE_SYSTEM = `あなたは推理ゲーム「お題当て」の出題係です。プレイヤーは質問とヒントを頼りにお題を当てます。
+指定されたジャンルから、お題の候補を15個挙げてください。
 条件:
 - 日本の中高生以上ならたいてい知っている言葉(名詞)。1〜12文字程度。
-- ありきたりすぎるもの(りんご、犬、猫など)は避け、ほどよく意外性のあるものにする。
-- 「最近使ったお題」と同じものや、とても近いものは避ける。
+- 誰でも思いつく定番(りんご、犬、猫など)ばかりにせず、身近なものから少しひねったものまで幅広く混ぜる。
+- 候補どうしが似すぎないようにする(同じ仲間ばかりにしない)。
+- 「避けるお題」に入っているものや、それとほぼ同じものは出さない。
+出力はJSONのみ: {"candidates":["候補1","候補2", ...]}`;
+
+const TOPIC_SYSTEM = `あなたは推理ゲーム「お題当て」の出題者です。プレイヤーは質問とヒントを頼りにお題を当てます。
+指定されたお題について、ゲームに必要な情報を作ってください。
+条件:
 - ヒントを${HINT_COUNT}つ作る。1つ目はかなり漠然とした内容にし、後になるほど具体的にして、最後のヒントでほぼ分かる程度にする。
 - ヒントには、お題そのもの・読み・別名・お題に含まれる漢字や言葉を入れない。各ヒントは40字以内。
 - aliases には、正解として認めてよい別の言い方(表記ゆれ・別名・略称)を0〜5個入れる。
 - desc には、お題がどんなものかを100字程度で説明する(質問に答える係が参考にするメモ。大きさ・材質・生き物かどうか・どこにあるか等の基本的な事実を含める)。
-出力はJSONのみ: {"topic":"お題","reading":"ひらがなの読み","aliases":["..."],"desc":"説明","hints":["ヒント1","..."]}`;
+出力はJSONのみ: {"reading":"ひらがなの読み","aliases":["..."],"desc":"説明","hints":["ヒント1","..."]}`;
 
 function questionSystem(sec) {
   return `あなたは推理ゲーム「お題当て」の回答役です。

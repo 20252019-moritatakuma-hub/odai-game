@@ -7,6 +7,9 @@ const MAX_PLAYERS = 10;
 const MAX_CYCLES = 8; // 8サイクルで終了(ヒントは最大7つ)
 const HINT_COUNT = MAX_CYCLES - 1;
 const LOG_LIMIT = 300;
+const CHAT_LIMIT = 100; // チャットは最新100件まで残す
+const CHAT_MAX_LEN = 200; // 1回のチャットの最大文字数
+const CHAT_INTERVAL_MS = 700; // 連投防止の間隔
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 const GENRES = [
@@ -63,7 +66,12 @@ export class Room extends DurableObject {
 
   async load() {
     if (this.s === undefined) this.s = (await this.ctx.storage.get("state")) ?? null;
-    if (this.s?.busy && Date.now() - (this.s.busy.at || 0) > 90_000) this.s.busy = null;
+    if (this.s) {
+      if (this.s.busy && Date.now() - (this.s.busy.at || 0) > 90_000) this.s.busy = null;
+      this.s.judging = (this.s.judging || []).filter((j) => Date.now() - j.at < 90_000);
+      this.s.chat ||= [];
+      this.s.chatSeq ||= 0;
+    }
     return this.s;
   }
 
@@ -78,7 +86,7 @@ export class Room extends DurableObject {
     this.s = {
       code, phase: "lobby", hostId: null, players: [], order: [], turnIndex: 0,
       cycle: 1, answered: [], hints: [], log: [], busy: null, winnerId: null,
-      secret: null, usedTopics: [],
+      secret: null, usedTopics: [], judging: [], chat: [], chatSeq: 0,
     };
     await this.save();
     return true;
@@ -136,6 +144,8 @@ export class Room extends DurableObject {
       answered: s.answered,
       log: s.log.slice(-LOG_LIMIT),
       busy: s.busy,
+      judging: s.judging.map((j) => j.playerId),
+      chat: s.chat,
       winnerId: s.winnerId,
       topic: s.phase === "ended" && s.secret ? s.secret.topic : null,
       aiReady: this.aiReady(),
@@ -190,6 +200,7 @@ export class Room extends DurableObject {
         case "skip": return await this.onSkip(ws, me);
         case "giveup": return await this.onGiveUp(ws, me);
         case "reset": return await this.onReset(ws, me);
+        case "chat": return await this.onChat(ws, me, msg);
       }
     } catch (e) {
       console.error(e);
@@ -218,7 +229,7 @@ export class Room extends DurableObject {
     let p = s.players.find((x) => x.id === id);
     if (!p) {
       if (s.phase !== "lobby") {
-        ws.serializeAttachment({ playerId: id, spectator: true });
+        ws.serializeAttachment({ playerId: id, spectator: true, name });
         this.info(ws, "ゲーム中のため観戦します。次のゲームから参加できます。");
         ws.send(JSON.stringify(this.view()));
         return;
@@ -230,7 +241,7 @@ export class Room extends DurableObject {
     } else if (s.phase === "lobby") {
       p.name = name;
     }
-    ws.serializeAttachment({ playerId: id });
+    ws.serializeAttachment({ playerId: id, name: p.name });
     if (!s.hostId || !this.connectedIds(ws).has(s.hostId)) {
       if (s.hostId !== id && s.hostId) s.log.push({ k: "sys", text: `${p.name}さんがホストになりました` });
       s.hostId = id;
@@ -267,6 +278,7 @@ export class Room extends DurableObject {
     s.hints = [];
     s.winnerId = null;
     s.busy = null;
+    s.judging = [];
     s.log = [];
     if (fallback) s.log.push({ k: "sys", text: "(AIの出題に失敗したため、予備のお題を使います)" });
     s.log.push({ k: "sys", text: `ゲーム開始!お題が決まりました(出題: ${topicBy})。順番: ${s.order.map((id) => this.nameOf(id)).join(" → ")}` });
@@ -284,6 +296,7 @@ export class Room extends DurableObject {
     if (!text) return this.err(ws, "質問を入力してください。");
 
     s.busy = { kind: "question", playerId: me, at: Date.now() };
+    const game = s.secret;
     this.broadcast();
 
     let res;
@@ -297,7 +310,7 @@ export class Room extends DurableObject {
       return this.err(ws, aiErrMsg(e, "もう一度質問してください(番は消費していません)。"));
     }
     s.busy = null;
-    if (s.phase !== "playing") { this.broadcast(); return; }
+    if (s.phase !== "playing" || s.secret !== game) { this.broadcast(); return; }
     s.log.push({ k: "q", by: me, name: this.nameOf(me), text, reply: res.reply, ai: res.label });
     this.advanceTurn();
     await this.save();
@@ -309,11 +322,15 @@ export class Room extends DurableObject {
     if (s.phase !== "playing") return this.err(ws, "ゲーム中ではありません。");
     if (!s.order.includes(me)) return this.err(ws, "観戦中は回答できません。");
     if (s.answered.includes(me)) return this.err(ws, "このサイクルはもう回答しました。次のサイクルまで待ってください。");
-    if (s.busy) return this.err(ws, "AIが考え中です。少し待ってください。");
+    if (s.judging.some((j) => j.playerId === me)) return this.err(ws, "あなたの回答を判定中です。");
+    if (s.busy?.kind === "start") return this.err(ws, "準備中です。少し待ってください。");
     const text = clean(msg.text, 40);
     if (!text) return this.err(ws, "回答を入力してください。");
 
-    s.busy = { kind: "answer", playerId: me, at: Date.now() };
+    // 判定は他の人の質問と同時に進められる
+    const game = s.secret; // 判定中にゲームが変わっていないか確かめるため
+    const cycleAtSubmit = s.cycle;
+    s.judging.push({ playerId: me, at: Date.now() });
     this.broadcast();
 
     let correct, judgeBy;
@@ -321,19 +338,37 @@ export class Room extends DurableObject {
       ({ correct, label: judgeBy } = await this.judge(text));
     } catch (e) {
       console.error(e);
-      s.busy = null;
+      s.judging = s.judging.filter((j) => j.playerId !== me);
       this.broadcast();
       return this.err(ws, aiErrMsg(e, "もう一度回答してください(回答権は消費していません)。"));
     }
-    s.busy = null;
-    if (s.phase !== "playing") { this.broadcast(); return; }
-    s.answered.push(me);
+    s.judging = s.judging.filter((j) => j.playerId !== me);
+    if (s.phase !== "playing" || s.secret !== game) { this.broadcast(); return; }
+    // 判定中にサイクルが変わったら、新しいサイクルの回答権は残す
+    if (s.cycle === cycleAtSubmit && !s.answered.includes(me)) s.answered.push(me);
     s.log.push({ k: "a", by: me, name: this.nameOf(me), text, correct, ai: judgeBy });
     if (correct) {
       s.phase = "ended";
       s.winnerId = me;
       s.log.push({ k: "sys", text: `🎉 ${this.nameOf(me)}さんが正解!お題は「${s.secret.topic}」でした` });
     }
+    await this.save();
+    this.broadcast();
+  }
+
+  async onChat(ws, me, msg) {
+    const s = this.s;
+    const text = clean(msg.text, CHAT_MAX_LEN);
+    if (!text) return;
+    // 連投防止
+    const now = Date.now();
+    const last = this.lastChat?.get(me) || 0;
+    if (now - last < CHAT_INTERVAL_MS) return this.err(ws, "少し間をあけて送ってください。");
+    (this.lastChat ||= new Map()).set(me, now);
+    const a = ws.deserializeAttachment() || {};
+    const name = s.players.find((p) => p.id === me)?.name || a.name || "観戦者";
+    s.chat.push({ n: ++s.chatSeq, by: me, name, text, spectator: !s.players.some((p) => p.id === me) });
+    if (s.chat.length > CHAT_LIMIT) s.chat = s.chat.slice(-CHAT_LIMIT);
     await this.save();
     this.broadcast();
   }
@@ -381,7 +416,7 @@ export class Room extends DurableObject {
     s.players = s.players.filter((p) => con.has(p.id));
     s.phase = "lobby";
     s.order = []; s.turnIndex = 0; s.cycle = 1; s.answered = []; s.hints = [];
-    s.secret = null; s.winnerId = null; s.busy = null;
+    s.secret = null; s.winnerId = null; s.busy = null; s.judging = [];
     s.log = [{ k: "sys", text: "ロビーに戻りました。ホストが開始するのを待っています" }];
     if (!con.has(s.hostId)) s.hostId = s.players[0]?.id ?? null;
     await this.save();

@@ -2,8 +2,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { MEMES } from "./memes.js";
 
-// お題のうち、際どいミーム(src/memes.js)から出す割合。0.3 = 約3回に1回
-const MEME_RATE = 0.3;
+// 際どいミーム(src/memes.js)が出る割合。
+// null のときは「ネットミーム」をジャンルの1つとして扱い、ほかのジャンルと同じ確率で出す
+// (ジャンルが22個なら 1/23 ≒ 4%)。数字(0〜1)を入れると、その割合で出す(例: 0.1 = 10回に1回)。
+const MEME_RATE = null;
 
 // ===== 設定 =====
 const ROOM_TTL_MS = 6 * 60 * 60 * 1000; // 誰もいない部屋は6時間後に削除
@@ -623,7 +625,8 @@ export class Room extends DurableObject {
       const list = memePool.length ? memePool : MEMES;
       return structuredClone(list[Math.floor(Math.random() * list.length)]);
     };
-    if (memePool.length && Math.random() < MEME_RATE) return { secret: pickMeme(), fallback: false, label: "ミームリスト" };
+    const memeRate = MEME_RATE ?? 1 / (GENRES.length + 1);
+    if (memePool.length && Math.random() < memeRate) return { secret: pickMeme(), fallback: false, label: "ミームリスト" };
     if (!anyAI(this.env)) return { secret: pickFallback(s.usedTopics), fallback: false, label: "テストモード" };
     try {
       const genre = GENRES[Math.floor(Math.random() * GENRES.length)];

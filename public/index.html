@@ -426,8 +426,9 @@
     const s = state;
     const me = s.players.find((p) => p.id === myId);
     const isPlayer = s.phase === "playing" ? s.order.includes(myId) : !!me;
-    const hostOnline = s.players.some((p) => p.id === s.hostId && p.connected);
-    const isHost = !!me && (s.hostId === myId || !hostOnline);
+    // ホストは観戦中でもホストのまま
+    const hostOnline = s.players.some((p) => p.id === s.hostId && p.connected) || (s.spectators || []).some((x) => x.id === s.hostId);
+    const isHost = s.hostId === myId || (!!me && !hostOnline);
     const myTurn = s.phase === "playing" && s.turnId === myId;
     const busy = !!s.busy;
 
@@ -457,7 +458,7 @@
     if (specs.length) {
       const c = el("div", "chip spec-chip");
       c.append(el("span", "tag", "👀 観戦"));
-      c.append(el("span", null, specs.map((x) => x.name + (x.id === myId ? "(あなた)" : "")).join("、")));
+      c.append(el("span", null, specs.map((x) => (x.id === s.hostId ? "👑" : "") + x.name + (x.id === myId ? "(あなた)" : "")).join("、")));
       pl.append(c);
     }
 

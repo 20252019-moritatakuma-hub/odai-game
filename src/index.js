@@ -301,10 +301,12 @@ export class Room extends DurableObject {
   }
 
   // ホストか、ホストが不在なら参加者の誰でも
+  // ホスト本人(観戦中でもOK)か、ホストが不在なら参加者の誰でも
   canHost(me) {
     const s = this.s;
+    if (s.hostId === me) return true;
     if (!s.players.some((p) => p.id === me)) return false;
-    return s.hostId === me || !this.connectedIds().has(s.hostId);
+    return !this.connectedIds().has(s.hostId);
   }
 
   // ----- WebSocket -----
@@ -647,13 +649,7 @@ export class Room extends DurableObject {
         s.turnIndex--;
       }
     }
-    // ホストが観戦に回ったら、ほかの参加者にホストを渡す
-    if (s.hostId === me) {
-      const con = this.connectedIds();
-      const next = s.players.find((x) => con.has(x.id));
-      s.hostId = next?.id ?? null;
-      if (next) s.log.push({ k: "sys", text: `${next.name}さんがホストになりました` });
-    }
+    // ホストが観戦に回っても、ホストはそのまま(観戦しながら進行できる)
     await this.save();
     this.broadcast();
   }

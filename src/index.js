@@ -112,6 +112,7 @@ export class Room extends DurableObject {
       this.s.chat ||= [];
       this.s.chatSeq ||= 0;
       if (!(this.s.answerMode in ANSWER_MODES)) this.s.answerMode = "four";
+      this.s.spectators ||= []; // 自分で観戦を選んだ人
     }
     return this.s;
   }
@@ -258,11 +259,25 @@ export class Room extends DurableObject {
       judging: s.judging.map((j) => j.playerId),
       chat: s.chat,
       answerMode: s.answerMode,
+      spectators: this.spectatorList(exclude),
       winnerId: s.winnerId,
       topic: s.phase === "ended" && s.secret ? s.secret.topic : null,
       aiReady: this.aiReady(),
       mock: !anyAI(this.env) && this.env.MOCK_AI === "1",
     };
+  }
+
+  // 接続中の観戦者(プレイヤーでない人)
+  spectatorList(exclude) {
+    const s = this.s;
+    const out = new Map();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === exclude) continue;
+      const a = ws.deserializeAttachment();
+      if (!a?.playerId || s.players.some((p) => p.id === a.playerId)) continue;
+      out.set(a.playerId, { id: a.playerId, name: a.name || "?" });
+    }
+    return [...out.values()];
   }
 
   broadcast(exclude) {
@@ -314,6 +329,8 @@ export class Room extends DurableObject {
         case "reset": return await this.onReset(ws, me);
         case "chat": return await this.onChat(ws, me, msg);
         case "answerMode": return await this.onAnswerMode(ws, me, msg);
+        case "spectate": return await this.onSpectate(ws, me);
+        case "play": return await this.onPlay(ws, me);
       }
     } catch (e) {
       console.error(e);
@@ -347,11 +364,18 @@ export class Room extends DurableObject {
     if (!id || !name) return this.err(ws, "名前を入力してください。", true);
 
     let p = s.players.find((x) => x.id === id);
+    // 自分で「観戦する」を選んだ人は、ページを開き直しても観戦のまま
+    if (!p && s.spectators.includes(id)) {
+      ws.serializeAttachment({ playerId: id, spectator: true, name });
+      await this.save();
+      this.broadcast();
+      return;
+    }
     if (!p) {
       if (s.phase !== "lobby") {
         ws.serializeAttachment({ playerId: id, spectator: true, name });
         this.info(ws, "ゲーム中のため観戦します。次のゲームから参加できます。");
-        ws.send(JSON.stringify(this.view()));
+        this.broadcast(); // ほかの人の画面の「観戦」欄にも出す
         return;
       }
       if (s.players.length >= MAX_PLAYERS) return this.err(ws, `満員です(最大${MAX_PLAYERS}人)。`, true);
@@ -562,9 +586,15 @@ export class Room extends DurableObject {
     if (s.phase !== "ended") return this.err(ws, "ゲームが終わってから使えます。");
     if (!this.canHost(me)) return this.err(ws, "ホストだけが操作できます。");
     const con = this.connectedIds();
-    // 観戦していた人も次のゲームに参加できるようにする
-    const known = new Set(s.players.map((p) => p.id));
     s.players = s.players.filter((p) => con.has(p.id));
+    // ゲーム途中に来て観戦していた人は、自動で次のゲームに参加させる(自分で観戦を選んだ人はそのまま)
+    for (const w of this.ctx.getWebSockets()) {
+      const a = w.deserializeAttachment();
+      if (!a?.playerId || !a.spectator || s.spectators.includes(a.playerId)) continue;
+      if (s.players.some((p) => p.id === a.playerId) || s.players.length >= MAX_PLAYERS) continue;
+      s.players.push({ id: a.playerId, name: a.name || "?" });
+      this.setSpectator(a.playerId, false);
+    }
     s.phase = "lobby";
     s.order = []; s.turnIndex = 0; s.cycle = 1; s.answered = []; s.hints = [];
     s.secret = null; s.winnerId = null; s.busy = null; s.judging = []; s.answerTime = false;
@@ -572,11 +602,76 @@ export class Room extends DurableObject {
     if (!con.has(s.hostId)) s.hostId = s.players[0]?.id ?? null;
     await this.save();
     this.broadcast();
-    // 観戦者には再参加を促す
+  }
+
+  // この人のすべての接続(タブ)の観戦フラグを書き換える
+  setSpectator(id, on) {
     for (const w of this.ctx.getWebSockets()) {
       const a = w.deserializeAttachment();
-      if (a?.spectator && !known.has(a.playerId)) this.info(w, "ロビーに戻りました。ページを再読み込みすると参加できます。");
+      if (a?.playerId === id) w.serializeAttachment({ ...a, spectator: on });
     }
+  }
+
+  // 「観戦する」ボタン
+  async onSpectate(ws, me) {
+    const s = this.s;
+    const p = s.players.find((x) => x.id === me);
+    if (!p) return this.err(ws, "すでに観戦中です。");
+    if (s.busy?.playerId === me) return this.err(ws, "あなたの質問をAIが考え中です。終わってから切り替えてください。");
+    if (s.judging.some((j) => j.playerId === me)) return this.err(ws, "あなたの回答を判定中です。終わってから切り替えてください。");
+    if (s.busy?.kind === "start") return this.err(ws, "準備中です。少し待ってください。");
+
+    s.players = s.players.filter((x) => x.id !== me);
+    if (!s.spectators.includes(me)) s.spectators.push(me);
+    this.setSpectator(me, true);
+    s.log.push({ k: "sys", text: `${p.name}さんが観戦に切り替えました` });
+
+    if (s.phase === "playing") {
+      const idx = s.order.indexOf(me);
+      const wasTurn = !s.answerTime && idx === s.turnIndex;
+      s.order.splice(idx, 1);
+      s.answered = s.answered.filter((x) => x !== me);
+      if (!s.order.length) {
+        // 全員が観戦になったら終わり
+        s.phase = "ended";
+        s.answerTime = false;
+        s.winnerId = null;
+        s.log.push({ k: "sys", text: `プレイヤーがいなくなりました。お題は「${s.secret.topic}」でした(出題: ${s.topicBy || "?"})` });
+      } else if (s.answerTime) {
+        s.turnIndex = s.order.length;
+        this.checkAnswerTime();
+      } else if (wasTurn) {
+        s.turnIndex = idx - 1;
+        this.advanceTurn(); // 次の人の番へ(最後の人だったら回答タイムへ)
+      } else if (idx < s.turnIndex) {
+        s.turnIndex--;
+      }
+    }
+    // ホストが観戦に回ったら、ほかの参加者にホストを渡す
+    if (s.hostId === me) {
+      const con = this.connectedIds();
+      const next = s.players.find((x) => con.has(x.id));
+      s.hostId = next?.id ?? null;
+      if (next) s.log.push({ k: "sys", text: `${next.name}さんがホストになりました` });
+    }
+    await this.save();
+    this.broadcast();
+  }
+
+  // 「参加する」ボタン(ゲームの外でだけ)
+  async onPlay(ws, me) {
+    const s = this.s;
+    if (s.players.some((x) => x.id === me)) return;
+    if (s.phase === "playing") return this.err(ws, "ゲーム中は参加できません。次のゲームから参加できます。");
+    if (s.players.length >= MAX_PLAYERS) return this.err(ws, `満員です(最大${MAX_PLAYERS}人)。`);
+    const name = clean(ws.deserializeAttachment()?.name, 12) || "名無し";
+    s.players.push({ id: me, name });
+    s.spectators = s.spectators.filter((x) => x !== me);
+    this.setSpectator(me, false);
+    s.log.push({ k: "sys", text: `${name}さんが参加しました` });
+    if (!s.hostId || !this.connectedIds().has(s.hostId) || !s.players.some((x) => x.id === s.hostId)) s.hostId = me;
+    await this.save();
+    this.broadcast();
   }
 
   // ----- 順番とサイクル -----

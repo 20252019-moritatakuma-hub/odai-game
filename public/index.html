@@ -78,6 +78,7 @@
   .chip.turn { border-color: var(--accent); background: var(--accent-soft); font-weight: 700; }
   .chip.off { opacity: .45; }
   .chip.me::after { content: "あなた"; font-size: 11px; color: var(--muted); }
+  .chip.spec-chip { border-style: dashed; color: var(--muted); }
   .chip .tag { font-size: 12px; }
   .status {
     padding: 12px 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -424,7 +425,7 @@
   function render() {
     const s = state;
     const me = s.players.find((p) => p.id === myId);
-    const isPlayer = s.phase === "lobby" ? !!me : s.order.includes(myId);
+    const isPlayer = s.phase === "playing" ? s.order.includes(myId) : !!me;
     const hostOnline = s.players.some((p) => p.id === s.hostId && p.connected);
     const isHost = !!me && (s.hostId === myId || !hostOnline);
     const myTurn = s.phase === "playing" && s.turnId === myId;
@@ -449,6 +450,14 @@
       if (s.phase === "playing" && s.answered.includes(p.id)) c.append(el("span", "tag", "✋回答済"));
       else if (s.answerTime && p.connected && !(s.judging || []).includes(p.id)) { c.classList.add("turn"); c.append(el("span", "tag", "⏰回答待ち")); }
       if (!p.connected) c.append(el("span", "tag", "離席"));
+      pl.append(c);
+    }
+    // 観戦中の人
+    const specs = s.spectators || [];
+    if (specs.length) {
+      const c = el("div", "chip spec-chip");
+      c.append(el("span", "tag", "👀 観戦"));
+      c.append(el("span", null, specs.map((x) => x.name + (x.id === myId ? "(あなた)" : "")).join("、")));
       pl.append(c);
     }
 
@@ -525,7 +534,13 @@
     if (playing && isHost) hb.append(button("降参してお題を見る", "btn ghost small", () => { if (confirm("ゲームを終了してお題を表示しますか?")) send({ type: "giveup" }); }, busy));
     if (s.phase === "ended" && isHost) hb.append(button("もう一度遊ぶ", "btn", () => send({ type: "reset" })));
     if (s.phase === "ended" && !isHost) hb.append(el("span", "muted", "ホストが次のゲームを準備します"));
-    if (!isPlayer && s.phase !== "lobby") hb.append(el("span", "muted", "観戦中です"));
+    // 観戦 ⇔ 参加 の切り替え
+    if (!playing && !me) hb.append(button("🙋 参加する", "btn", () => send({ type: "play" })));
+    if (!playing && me) hb.append(button("👀 観戦する", "btn ghost small", () => send({ type: "spectate" }), busy));
+    if (playing && isPlayer) hb.append(button("👀 観戦に切り替える", "btn ghost small", () => {
+      if (confirm("観戦に切り替えますか?\nこのゲームにはもう戻れません(次のゲームから参加できます)。")) send({ type: "spectate" });
+    }, busy && s.busy.playerId === myId));
+    if (playing && !isPlayer) hb.append(el("span", "muted", "👀 観戦中です(次のゲームから参加できます)"));
     // AIの答え方(ゲーム開始前・終了後に表示。変えられるのはホストだけ)
     const mb = $("#modeBox");
     const showMode = s.phase !== "playing";
